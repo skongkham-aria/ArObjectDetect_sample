@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.IO;
 using UnityEngine;
@@ -36,6 +37,12 @@ public class DetectionTester : MonoBehaviour
         
         // Initialize detector
         detector = new TensorFlowLiteDetector();
+        if (detector == null)
+        {
+            Debug.LogError("Failed to initialize TensorFlowLiteDetector!");
+            UpdateStatus("✗ Failed to initialize detector!");
+            return;
+        }
         
         // Set up file paths
         modelPath = Path.Combine(Application.streamingAssetsPath, modelFileName);
@@ -164,7 +171,19 @@ public class DetectionTester : MonoBehaviour
         {
             Debug.Log("✓ Model initialized successfully!");
             UpdateStatus("✓ Model initialized successfully!");
-            UpdateResults(currentResults + "\n\nModel Initialization: SUCCESS");
+            
+            // Get and display input dimensions
+            int[] inputDimensions = detector.GetInputDimensions();
+            if (inputDimensions != null && inputDimensions.Length >= 3)
+            {
+                Debug.Log($"Model input dimensions: {inputDimensions[0]}x{inputDimensions[1]}x{inputDimensions[2]}");
+                UpdateResults(currentResults + $"\n\nModel Initialization: SUCCESS\nInput Dimensions: {inputDimensions[0]}x{inputDimensions[1]}x{inputDimensions[2]}");
+            }
+            else
+            {
+                Debug.LogWarning("Could not retrieve input dimensions");
+                UpdateResults(currentResults + "\n\nModel Initialization: SUCCESS");
+            }
         }
         else
         {
@@ -193,7 +212,12 @@ public class DetectionTester : MonoBehaviour
 
         #if UNITY_ANDROID && !UNITY_EDITOR
         // Load image from StreamingAssets on Android
-        string imageUrl = "file://" + imagePath;
+        string imageUrl = imagePath;
+        // On Android, Application.streamingAssetsPath already includes the proper scheme (jar:file://)
+        if (!imagePath.StartsWith("jar:") && !imagePath.StartsWith("file://"))
+        {
+            imageUrl = "file://" + imagePath;
+        }
         WWW www = new WWW(imageUrl);
         yield return www;
         
@@ -252,10 +276,95 @@ public class DetectionTester : MonoBehaviour
         
         // Run detection
         Debug.Log("Running object detection...");
-        int detectedObjects = detector.DetectObjects(imageData, texture.width, texture.height);
+        int channels = 3; // RGB format
+        string detectionResult = detector.DetectObjects(imageData, texture.width, texture.height, channels);
+        
+        // Parse the JSON result
+        int detectedObjects = 0;
+        string detectionResults = "";
+        
+        if (!string.IsNullOrEmpty(detectionResult))
+        {
+            try
+            {
+                Debug.Log($"DetectionTester: Parsing JSON result: {detectionResult}");
+                
+                // Simple JSON parsing to extract total_detections
+                if (detectionResult.Contains("total_detections"))
+                {
+                    // Look for the pattern with space after colon
+                    string pattern = "\"total_detections\": ";
+                    int startIndex = detectionResult.IndexOf(pattern);
+                    if (startIndex == -1)
+                    {
+                        // Try without space as fallback
+                        pattern = "\"total_detections\":";
+                        startIndex = detectionResult.IndexOf(pattern);
+                    }
+                    
+                    if (startIndex != -1)
+                    {
+                        startIndex += pattern.Length;
+                        int endIndex = detectionResult.IndexOf(",", startIndex);
+                        if (endIndex == -1) endIndex = detectionResult.IndexOf("}", startIndex);
+                        
+                        if (endIndex > startIndex)
+                        {
+                            string countStr = detectionResult.Substring(startIndex, endIndex - startIndex).Trim();
+                            Debug.Log($"DetectionTester: Extracted count string: '{countStr}'");
+                            
+                            if (int.TryParse(countStr, out detectedObjects))
+                            {
+                                Debug.Log($"✓ Detection completed! Found {detectedObjects} objects");
+                                Debug.Log($"Full detection JSON: {detectionResult}");
+                                
+                                UpdateStatus($"✓ Detection completed!");
+                                detectionResults = $"DETECTION RESULTS:\n" +
+                                                 $"Objects Found: {detectedObjects}\n" +
+                                                 $"Image Size: {texture.width}x{texture.height}\n" +
+                                                 $"Data Size: {imageData.Length} bytes\n" +
+                                                 $"Model: {modelFileName}\n\n" +
+                                                 $"Raw JSON Result:\n{detectionResult}";
+                            }
+                            else
+                            {
+                                Debug.LogError($"Failed to parse detection count from string: '{countStr}'");
+                                detectedObjects = -1;
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogError("Failed to find end of total_detections value in JSON");
+                            detectedObjects = -1;
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogError("Failed to find total_detections pattern in JSON");
+                        detectedObjects = -1;
+                    }
+                }
+                else
+                {
+                    Debug.LogError("Invalid JSON format - missing total_detections field");
+                    Debug.LogError($"Received JSON: {detectionResult}");
+                    detectedObjects = -1;
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Error parsing detection JSON: {e.Message}");
+                Debug.LogError($"JSON that failed to parse: {detectionResult}");
+                detectedObjects = -1;
+            }
+        }
+        else
+        {
+            Debug.LogError("DetectObjects returned null or empty result");
+            detectedObjects = -1;
+        }
         
         // Display results
-        string detectionResults = "";
         if (detectedObjects >= 0)
         {
             Debug.Log($"✓ Detection completed! Found {detectedObjects} objects");
@@ -267,7 +376,20 @@ public class DetectionTester : MonoBehaviour
                              $"Model: {modelFileName}";
             
             // Create detection summary labels on the image
-            CreateDetectionLabels(detectedObjects, texture.width, texture.height);
+            if (imageDisplay == null)
+            {
+                Debug.LogWarning("imageDisplay is null before calling CreateDetectionLabels, attempting to create UI");
+                CreateUIIfNeeded();
+            }
+            
+            if (imageDisplay != null)
+            {
+                CreateDetectionLabels(detectedObjects, texture.width, texture.height);
+            }
+            else
+            {
+                Debug.LogError("imageDisplay is still null after UI creation, cannot create detection labels");
+            }
         }
         else
         {
@@ -294,6 +416,7 @@ public class DetectionTester : MonoBehaviour
         
         #if UNITY_ANDROID && !UNITY_EDITOR
         string sourceUrl = sourcePath;
+        // On Android, Application.streamingAssetsPath already includes the proper scheme for APK files
         if (!sourcePath.StartsWith("jar:") && !sourcePath.StartsWith("file://"))
         {
             sourceUrl = "file://" + sourcePath;
@@ -456,7 +579,18 @@ public class DetectionTester : MonoBehaviour
             GameObject statusGO = new GameObject("StatusText");
             statusGO.transform.SetParent(uiCanvas.transform, false);
             statusText = statusGO.AddComponent<Text>();
-            statusText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (statusText == null)
+            {
+                Debug.LogError("CreateUIIfNeeded: Failed to add Text component to statusText");
+                DestroyImmediate(statusGO);
+                return;
+            }
+            
+            statusText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf") ?? Resources.Load<Font>("Arial");
+            if (statusText.font == null)
+            {
+                Debug.LogWarning("CreateUIIfNeeded: No font could be loaded for statusText, using default font");
+            }
             statusText.fontSize = 24;
             statusText.color = Color.white;
             statusText.text = "Initializing...";
@@ -474,7 +608,18 @@ public class DetectionTester : MonoBehaviour
             GameObject resultsGO = new GameObject("ResultsText");
             resultsGO.transform.SetParent(uiCanvas.transform, false);
             resultsText = resultsGO.AddComponent<Text>();
-            resultsText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (resultsText == null)
+            {
+                Debug.LogError("CreateUIIfNeeded: Failed to add Text component to resultsText");
+                DestroyImmediate(resultsGO);
+                return;
+            }
+            
+            resultsText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf") ?? Resources.Load<Font>("Arial");
+            if (resultsText.font == null)
+            {
+                Debug.LogWarning("CreateUIIfNeeded: No font could be loaded for resultsText, using default font");
+            }
             resultsText.fontSize = 16;
             resultsText.color = Color.yellow;
             resultsText.text = "";
@@ -546,23 +691,63 @@ public class DetectionTester : MonoBehaviour
     /// </summary>
     private void CreateDetectionLabels(int objectCount, int imageWidth, int imageHeight)
     {
-        if (imageDisplay == null) return;
+        if (imageDisplay == null) 
+        {
+            Debug.LogWarning("CreateDetectionLabels: imageDisplay is null, cannot create labels");
+            return;
+        }
         
         // Clear existing labels
-        foreach (Transform child in imageDisplay.transform)
+        try
         {
-            if (child.name.StartsWith("DetectionLabel"))
+            // Collect labels to destroy first to avoid collection modification during iteration
+            System.Collections.Generic.List<GameObject> labelsToDestroy = new System.Collections.Generic.List<GameObject>();
+            
+            foreach (Transform child in imageDisplay.transform)
             {
-                DestroyImmediate(child.gameObject);
+                if (child != null && child.name != null && child.name.StartsWith("DetectionLabel"))
+                {
+                    labelsToDestroy.Add(child.gameObject);
+                }
             }
+            
+            // Now destroy them safely
+            foreach (GameObject labelObj in labelsToDestroy)
+            {
+                if (labelObj != null)
+                {
+                    DestroyImmediate(labelObj);
+                }
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"CreateDetectionLabels: Error clearing existing labels: {e.Message}");
         }
         
         // Create a summary label
         GameObject summaryLabel = new GameObject("DetectionLabel_Summary");
+        if (summaryLabel == null)
+        {
+            Debug.LogError("CreateDetectionLabels: Failed to create summaryLabel GameObject");
+            return;
+        }
+        
         summaryLabel.transform.SetParent(imageDisplay.transform, false);
         
         Text labelText = summaryLabel.AddComponent<Text>();
-        labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        if (labelText == null)
+        {
+            Debug.LogError("CreateDetectionLabels: Failed to add Text component to summaryLabel");
+            DestroyImmediate(summaryLabel);
+            return;
+        }
+        
+        labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf") ?? Resources.Load<Font>("Arial");
+        if (labelText.font == null)
+        {
+            Debug.LogWarning("CreateDetectionLabels: No font could be loaded, using default font");
+        }
         labelText.fontSize = 20;
         labelText.color = Color.green;
         labelText.fontStyle = FontStyle.Bold;
@@ -571,9 +756,22 @@ public class DetectionTester : MonoBehaviour
         
         // Add background
         Image labelBg = summaryLabel.AddComponent<Image>();
-        labelBg.color = new Color(0, 0, 0, 0.7f);
+        if (labelBg == null)
+        {
+            Debug.LogError("CreateDetectionLabels: Failed to add Image component to summaryLabel");
+        }
+        else
+        {
+            labelBg.color = new Color(0, 0, 0, 0.7f);
+        }
         
         RectTransform labelRT = labelText.GetComponent<RectTransform>();
+        if (labelRT == null)
+        {
+            Debug.LogError("CreateDetectionLabels: Failed to get RectTransform from labelText");
+            return;
+        }
+        
         labelRT.anchorMin = new Vector2(0, 1);
         labelRT.anchorMax = new Vector2(1, 1);
         labelRT.anchoredPosition = new Vector2(0, -25);
@@ -597,13 +795,40 @@ public class DetectionTester : MonoBehaviour
     /// </summary>
     private void CreateInfoLabel(string title, string value, Vector2 position)
     {
-        if (imageDisplay == null) return;
+        if (imageDisplay == null) 
+        {
+            Debug.LogWarning($"CreateInfoLabel: imageDisplay is null, cannot create label for {title}");
+            return;
+        }
+        
+        if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(value))
+        {
+            Debug.LogWarning("CreateInfoLabel: title or value is null/empty");
+            return;
+        }
         
         GameObject infoLabel = new GameObject($"DetectionLabel_{title}");
+        if (infoLabel == null)
+        {
+            Debug.LogError($"CreateInfoLabel: Failed to create GameObject for {title}");
+            return;
+        }
+        
         infoLabel.transform.SetParent(imageDisplay.transform, false);
         
         Text labelText = infoLabel.AddComponent<Text>();
-        labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        if (labelText == null)
+        {
+            Debug.LogError($"CreateInfoLabel: Failed to add Text component for {title}");
+            DestroyImmediate(infoLabel);
+            return;
+        }
+        
+        labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf") ?? Resources.Load<Font>("Arial");
+        if (labelText.font == null)
+        {
+            Debug.LogWarning($"CreateInfoLabel: No font could be loaded for {title}, using default font");
+        }
         labelText.fontSize = 14;
         labelText.color = Color.cyan;
         labelText.text = $"{title}: {value}";
@@ -611,9 +836,22 @@ public class DetectionTester : MonoBehaviour
         
         // Add background
         Image labelBg = infoLabel.AddComponent<Image>();
-        labelBg.color = new Color(0, 0, 0, 0.5f);
+        if (labelBg == null)
+        {
+            Debug.LogError($"CreateInfoLabel: Failed to add Image component for {title}");
+        }
+        else
+        {
+            labelBg.color = new Color(0, 0, 0, 0.5f);
+        }
         
         RectTransform labelRT = labelText.GetComponent<RectTransform>();
+        if (labelRT == null)
+        {
+            Debug.LogError($"CreateInfoLabel: Failed to get RectTransform from labelText for {title}");
+            return;
+        }
+        
         labelRT.anchorMin = position;
         labelRT.anchorMax = position;
         labelRT.anchoredPosition = Vector2.zero;
