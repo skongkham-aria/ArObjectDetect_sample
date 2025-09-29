@@ -43,6 +43,8 @@ namespace DetectionPlugin
             if (nativeLibInstance == null)
             {
                 Debug.LogError("TensorFlowLiteDetector: Native library instance is null");
+                Debug.LogError("TensorFlowLiteDetector: Make sure the AAR file is in Plugins/Android/ folder");
+                Debug.LogError("TensorFlowLiteDetector: And that you're building for Android platform");
                 return false;
             }
 
@@ -50,16 +52,38 @@ namespace DetectionPlugin
             {
                 Debug.Log($"TensorFlowLiteDetector: Initializing with model path: {modelPath}");
                 
+                // Check if file exists before passing to native code
+                if (!System.IO.File.Exists(modelPath))
+                {
+                    Debug.LogError($"TensorFlowLiteDetector: Model file does not exist at path: {modelPath}");
+                    return false;
+                }
+                
+                // Get file size for debugging
+                System.IO.FileInfo fileInfo = new System.IO.FileInfo(modelPath);
+                Debug.Log($"TensorFlowLiteDetector: Model file size: {fileInfo.Length} bytes");
+                
+                // Check file extension
+                if (!modelPath.EndsWith(".tflite"))
+                {
+                    Debug.LogWarning($"TensorFlowLiteDetector: File doesn't have .tflite extension: {modelPath}");
+                }
+                
                 bool result = nativeLibInstance.Call<bool>("initializeDetector", modelPath);
                 
                 if (result)
                 {
                     isInitialized = true;
-                    Debug.Log("TensorFlowLiteDetector: Initialization successful");
+                    Debug.Log("TensorFlowLiteDetector: ✓ Initialization successful");
                 }
                 else
                 {
-                    Debug.LogError("TensorFlowLiteDetector: Initialization failed");
+                    Debug.LogError("TensorFlowLiteDetector: ✗ Initialization failed - Native method returned false");
+                    Debug.LogError("TensorFlowLiteDetector: Check Android logcat for detailed native error messages");
+                    Debug.LogError("TensorFlowLiteDetector: Possible causes:");
+                    Debug.LogError("TensorFlowLiteDetector: - Invalid model file format");
+                    Debug.LogError("TensorFlowLiteDetector: - Insufficient device memory");
+                    Debug.LogError("TensorFlowLiteDetector: - Model incompatible with TensorFlow Lite version");
                 }
                 
                 return result;
@@ -67,10 +91,14 @@ namespace DetectionPlugin
             catch (Exception e)
             {
                 Debug.LogError($"TensorFlowLiteDetector: Exception during initialization: {e.Message}");
+                Debug.LogError($"TensorFlowLiteDetector: Exception type: {e.GetType().Name}");
+                Debug.LogError($"TensorFlowLiteDetector: Stack trace: {e.StackTrace}");
                 return false;
             }
             #else
             Debug.LogWarning("TensorFlowLiteDetector: Initialize - This plugin only works on Android devices");
+            Debug.LogWarning("TensorFlowLiteDetector: You're currently running in Unity Editor or non-Android platform");
+            Debug.LogWarning("TensorFlowLiteDetector: For testing, build and deploy to an Android device");
             return false;
             #endif
         }
